@@ -31,8 +31,8 @@
 #include <Shlobj.h>
 #include <algorithm>
 #include <chrono>
-#include <cstdlib>
 #include <comutil.h>
+#include <cstdlib>
 #include <string.h>
 
 // suppress warning about GetVersionEx, which is used indirectly in this
