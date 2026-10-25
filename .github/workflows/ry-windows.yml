@@ -1,0 +1,149 @@
+# Fork-only build: Windows x64 MSI for RyQuantum/deskflow.
+# Push ry-fixes -> lint, build, unit tests, package (workflow artifact).
+# Push tag "<UPSTREAM_VERSION>-ry.<FORK_REV>" -> the same, then a GitHub Release.
+# Metadata lives in ry/fork.env; see omnicraft forks/deskflow.md.
+
+name: ry-windows
+
+on:
+  push:
+    branches: [ry-fixes]
+    tags: ["*-ry.*"]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint-clang:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Lint Checker
+        uses: ./.github/actions/lint-clang
+
+  windows-x64:
+    needs: lint-clang
+    runs-on: windows-2022
+    timeout-minutes: 45
+    permissions:
+      contents: write
+
+    steps:
+      # gets all tags so CMake's git describe yields the right version
+      - name: Fancy Checkout
+        uses: sithlord48/fancy-checkout@v2
+
+      - name: Check fork metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          source ry/fork.env
+          git merge-base --is-ancestor "$UPSTREAM_COMMIT" HEAD \
+            || { echo "::error::UPSTREAM_COMMIT $UPSTREAM_COMMIT is not an ancestor of HEAD"; exit 1; }
+          described=$(git describe --long --match 'v*' "$UPSTREAM_COMMIT" | sed -E 's/^v([0-9.]+)-([0-9]+)-g.*/\1.\2/')
+          [ "$described" == "$UPSTREAM_VERSION" ] \
+            || { echo "::error::UPSTREAM_VERSION $UPSTREAM_VERSION but git describe says $described"; exit 1; }
+          label="$UPSTREAM_VERSION-ry.$FORK_REV"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            [ "$GITHUB_REF_NAME" == "$label" ] \
+              || { echo "::error::tag $GITHUB_REF_NAME does not match ry/fork.env ($label)"; exit 1; }
+          else
+            label="$label-dev.$(git rev-parse --short=8 HEAD)"
+          fi
+          echo "RY_PACKAGE_LABEL=$label" >> "$GITHUB_ENV"
+          echo "package label: $label"
+
+      # runs vcvarsall.bat; VC++ is preinstalled on the runner
+      - name: Setup VC++ environment
+        uses: TheMrMilchmann/setup-msvc-dev@v4
+        with:
+          arch: amd64
+          spectre: true
+
+      - name: Install dependencies
+        id: get-deps
+        uses: ./.github/actions/install-dependencies
+        with:
+          qt-version: "6.12"
+          vcpkg-triplet: x64-windows-release
+
+      - name: Configure
+        shell: bash
+        run: >
+          cmake -Bbuild -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_COMPILE_WARNING_AS_ERROR=ON
+          ${{ steps.get-deps.outputs.vcpkg-cmake-config }}
+          -DPACKAGE_VERSION_LABEL="$RY_PACKAGE_LABEL"
+
+      - name: Build
+        shell: bash
+        run: cmake --build build --config Release -j8 --target package
+
+      - name: Unit tests
+        shell: bash
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          set -euo pipefail
+          # fail loudly if the fork's own test was not registered
+          ctest --test-dir build/src/unittests -N -R '^MSWindowsStaleMotionTests$' | grep -q 'Total Tests: 1' \
+            || { echo "::error::MSWindowsStaleMotionTests is not registered"; exit 1; }
+          ctest --test-dir build/src/unittests --output-on-failure
+
+      - name: Test package
+        uses: ./.github/actions/test-package
+
+      - name: Check version
+        shell: bash
+        run: |
+          set -euo pipefail
+          exe=$(find tmp/deskflow-pkg -name "deskflow-core.exe" -type f | head -1)
+          exe_dir=$(dirname "$exe")
+          export PATH="$exe_dir:$(dirname "$exe_dir"):$PATH"
+          out=$("$exe" --version 2>&1 || true)
+          echo "$out"
+          sha=$(git rev-parse --short=8 HEAD)
+          echo "$out" | grep -q "$sha" || { echo "::error::deskflow-core --version does not mention $sha"; exit 1; }
+          ls -l build/deskflow-*
+
+      - name: Checksums
+        shell: bash
+        run: |
+          cd build
+          for f in deskflow-*.msi deskflow-*-portable.zip; do sha256sum "$f" > "$f.sha256"; done
+          cat *.sha256
+
+      - name: Upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: deskflow-${{ env.RY_PACKAGE_LABEL }}-win-x64
+          path: |
+            build/deskflow-*.msi
+            build/deskflow-*-portable.zip
+            build/*.sha256
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          prev=$(git tag --list '*-ry.*' --sort=-creatordate | grep -vx "$GITHUB_REF_NAME" | head -1 || true)
+          {
+            echo "Windows x64 build of [ry-fixes](https://github.com/${{ github.repository }}/tree/ry-fixes) on upstream deskflow \`$(source ry/fork.env; echo $UPSTREAM_COMMIT | cut -c1-9)\`."
+            echo
+            echo "Commits since ${prev:-upstream}:"
+            echo
+            if [ -n "$prev" ]; then range="$prev..HEAD"; else range="$(source ry/fork.env; echo $UPSTREAM_COMMIT)..HEAD"; fi
+            git log --format='- %h %s' "$range"
+          } > notes.md
+          cat notes.md
+          gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file notes.md --latest \
+            build/deskflow-*.msi build/deskflow-*-portable.zip build/*.sha256
