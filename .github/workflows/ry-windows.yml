@@ -74,12 +74,13 @@ jobs:
           qt-version: "6.12"
           vcpkg-triplet: x64-windows-release
 
+      # pwsh, not bash: the vcpkg toolchain path has backslashes
       - name: Configure
-        shell: bash
+        shell: pwsh
         run: >
           cmake -Bbuild -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_COMPILE_WARNING_AS_ERROR=ON
           ${{ steps.get-deps.outputs.vcpkg-cmake-config }}
-          -DPACKAGE_VERSION_LABEL="$RY_PACKAGE_LABEL"
+          -DPACKAGE_VERSION_LABEL="$env:RY_PACKAGE_LABEL"
 
       - name: Build
         shell: bash
