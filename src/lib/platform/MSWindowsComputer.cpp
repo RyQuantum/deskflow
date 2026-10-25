@@ -27,12 +27,12 @@
 #include "platform/MSWindowsEventQueueBuffer.h"
 #include "platform/MSWindowsKeyState.h"
 #include "platform/MSWindowsScreenSaver.h"
+#include "platform/MSWindowsStaleMotion.h"
 
 #include <Shlobj.h>
 #include <algorithm>
 #include <chrono>
 #include <comutil.h>
-#include <cstdlib>
 #include <string.h>
 
 // suppress warning about GetVersionEx, which is used indirectly in this
@@ -1447,21 +1447,9 @@ bool MSWindowsComputer::ignore() const
 
 bool MSWindowsComputer::isStaleMotionAfterLeave(int32_t mx, int32_t my) const
 {
-  constexpr auto kStaleMotionGracePeriod = std::chrono::milliseconds(500);
-  if (std::chrono::steady_clock::now() - m_leaveTime > kStaleMotionGracePeriod) {
-    return false;
-  }
-
-  // While off screen, the cursor is parked at the warp center, so a genuine
-  // relayed event reports a position within one event's travel of it. An
-  // event generated before leave() warped the cursor still reports a
-  // position near the edge we left on that axis -- at least two thirds of
-  // the way from center to edge.
-  constexpr int32_t kStaleZoneNumerator = 2;
-  constexpr int32_t kStaleZoneDenominator = 3;
-  int32_t const staleZoneX = m_xCenter * kStaleZoneNumerator / kStaleZoneDenominator;
-  int32_t const staleZoneY = m_yCenter * kStaleZoneNumerator / kStaleZoneDenominator;
-  return std::abs(mx - m_xCenter) > staleZoneX || std::abs(my - m_yCenter) > staleZoneY;
+  return deskflow::platform::isStaleMotionAfterLeave(
+      std::chrono::steady_clock::now() - m_leaveTime, mx, my, m_xCenter, m_yCenter
+  );
 }
 
 void MSWindowsComputer::updateComputerShape()

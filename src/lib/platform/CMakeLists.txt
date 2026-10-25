@@ -66,6 +66,7 @@ if(WIN32)
     MSWindowsScreenSaver.h
     MSWindowsSession.cpp
     MSWindowsSession.h
+    MSWindowsStaleMotion.h
     MSWindowsWatchdog.cpp
     MSWindowsWatchdog.h
   )
